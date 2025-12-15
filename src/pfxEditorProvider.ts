@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import * as forge from 'node-forge';
+import { logger } from './extension';
 
 /**
  * Parsed certificate information for display
@@ -58,7 +59,9 @@ export class PfxEditorProvider implements vscode.CustomReadonlyEditorProvider<Pf
         _openContext: vscode.CustomDocumentOpenContext,
         _token: vscode.CancellationToken
     ): Promise<PfxDocument> {
+        logger.info('Opening PFX document', { path: uri.fsPath });
         const data = await vscode.workspace.fs.readFile(uri);
+        logger.debug('File read successfully', { size: data.length });
         return new PfxDocument(uri, data);
     }
 
@@ -67,16 +70,19 @@ export class PfxEditorProvider implements vscode.CustomReadonlyEditorProvider<Pf
         webviewPanel: vscode.WebviewPanel,
         _token: vscode.CancellationToken
     ): Promise<void> {
+        logger.debug('Resolving custom editor for document');
         webviewPanel.webview.options = {
             enableScripts: true,
         };
 
         // Try to parse without password first
+        logger.debug('Attempting to parse PFX without password');
         let pfxContents = this.parsePfx(document.data, '');
         let isPasswordProtected = false;
         
         // If parsing failed (likely password protected), prompt for password
         if (pfxContents.error && pfxContents.error.includes('password')) {
+            logger.info('PFX file is password protected, prompting user');
             isPasswordProtected = true;
             const password = await vscode.window.showInputBox({
                 prompt: 'Enter the password for this PFX/P12 file',
@@ -89,6 +95,15 @@ export class PfxEditorProvider implements vscode.CustomReadonlyEditorProvider<Pf
                 pfxContents = this.parsePfx(document.data, password);
                 pfxContents.isPasswordProtected = true;
             }
+        }
+
+        if (pfxContents.error) {
+            logger.warn('Failed to parse PFX file', { error: pfxContents.error });
+        } else {
+            logger.info('PFX parsed successfully', { 
+                certificateCount: pfxContents.certificates.length,
+                hasPrivateKey: pfxContents.hasPrivateKey 
+            });
         }
 
         webviewPanel.webview.html = this.getHtmlForWebview(webviewPanel.webview, pfxContents, document.uri);
