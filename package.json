@@ -36,6 +36,25 @@
   "activationEvents": [],
   "main": "./dist/extension.js",
   "contributes": {
+    "configuration": {
+      "title": "PFX/P12 Viewer",
+      "properties": {
+        "pfx-view.logLevel": {
+          "type": "string",
+          "default": "info",
+          "enum": ["off", "error", "warn", "info", "debug", "trace"],
+          "enumDescriptions": [
+            "No logging",
+            "Only errors",
+            "Errors and warnings",
+            "Errors, warnings, and info (default)",
+            "All except trace",
+            "All log levels"
+          ],
+          "description": "Controls the log level for the PFX/P12 Viewer extension"
+        }
+      }
+    },
     "customEditors": [
       {
         "viewType": "pfx-view.pfxViewer",

@@ -110,7 +110,9 @@ export class PfxEditorProvider implements vscode.CustomReadonlyEditorProvider<Pf
 
         // Handle messages from the webview
         webviewPanel.webview.onDidReceiveMessage(async (message) => {
+            logger.debug('Received webview message', { type: message.type });
             if (message.type === 'retry-password') {
+                logger.info('User retrying password entry');
                 const password = await vscode.window.showInputBox({
                     prompt: 'Enter the password for this PFX/P12 file',
                     password: true,
@@ -121,12 +123,25 @@ export class PfxEditorProvider implements vscode.CustomReadonlyEditorProvider<Pf
                 if (password !== undefined) {
                     const newContents = this.parsePfx(document.data, password);
                     newContents.isPasswordProtected = true;
+                    if (newContents.error) {
+                        logger.warn('Password retry failed', { error: newContents.error });
+                    } else {
+                        logger.info('Password retry successful');
+                    }
                     webviewPanel.webview.html = this.getHtmlForWebview(webviewPanel.webview, newContents, document.uri);
+                } else {
+                    logger.debug('User cancelled password entry');
                 }
             } else if (message.type === 'copy-to-clipboard') {
+                logger.debug('Copying value to clipboard');
                 await vscode.env.clipboard.writeText(message.value);
                 vscode.window.showInformationMessage('Copied to clipboard!');
             }
+        });
+
+        // Log when panel is disposed
+        webviewPanel.onDidDispose(() => {
+            logger.debug('Webview panel disposed');
         });
     }
 
@@ -135,19 +150,24 @@ export class PfxEditorProvider implements vscode.CustomReadonlyEditorProvider<Pf
      */
     private parsePfx(data: Uint8Array, password: string): PfxContents {
         try {
+            logger.trace('Converting binary data for forge');
             // Convert Uint8Array to binary string for forge
             let binary = '';
             for (let i = 0; i < data.length; i++) {
                 binary += String.fromCharCode(data[i]);
             }
             const derBuffer = forge.util.createBuffer(binary, 'raw');
+            
+            logger.trace('Parsing ASN.1 structure');
             const asn1 = forge.asn1.fromDer(derBuffer);
             
             let p12: forge.pkcs12.Pkcs12Pfx;
             try {
+                logger.trace('Attempting PKCS12 parse (non-strict mode)');
                 p12 = forge.pkcs12.pkcs12FromAsn1(asn1, false, password);
             } catch (e) {
                 // Try with strict mode
+                logger.trace('Non-strict failed, trying strict mode');
                 p12 = forge.pkcs12.pkcs12FromAsn1(asn1, password);
             }
 
@@ -158,16 +178,24 @@ export class PfxEditorProvider implements vscode.CustomReadonlyEditorProvider<Pf
             // Get certificate bags
             const certBags = p12.getBags({ bagType: forge.pki.oids.certBag });
             const certBagArray = certBags[forge.pki.oids.certBag] || [];
+            logger.debug('Found certificate bags', { count: certBagArray.length });
 
             for (const bag of certBagArray) {
                 if (bag.cert) {
-                    certificates.push(this.extractCertInfo(bag.cert));
+                    const certInfo = this.extractCertInfo(bag.cert);
+                    logger.debug('Extracted certificate', { 
+                        cn: certInfo.subject['CN'] || 'N/A',
+                        thumbprint: certInfo.thumbprint.substring(0, 16) + '...',
+                        isExpired: certInfo.isExpired
+                    });
+                    certificates.push(certInfo);
                 }
             }
 
             // Get private key bags
             const keyBags = p12.getBags({ bagType: forge.pki.oids.pkcs8ShroudedKeyBag });
             const keyBagArray = keyBags[forge.pki.oids.pkcs8ShroudedKeyBag] || [];
+            logger.debug('Found shrouded key bags', { count: keyBagArray.length });
 
             if (keyBagArray.length > 0) {
                 hasPrivateKey = true;
@@ -175,14 +203,17 @@ export class PfxEditorProvider implements vscode.CustomReadonlyEditorProvider<Pf
                 if (keyBag.key) {
                     const rsaKey = keyBag.key as forge.pki.rsa.PrivateKey;
                     privateKeyInfo = `RSA ${(rsaKey.n.bitLength())} bits`;
+                    logger.debug('Found private key', { type: 'RSA', bits: rsaKey.n.bitLength() });
                 } else {
                     privateKeyInfo = 'Private key present (encrypted)';
+                    logger.debug('Found encrypted private key');
                 }
             }
 
             // Also check for unencrypted key bags
             const plainKeyBags = p12.getBags({ bagType: forge.pki.oids.keyBag });
             const plainKeyBagArray = plainKeyBags[forge.pki.oids.keyBag] || [];
+            logger.debug('Found plain key bags', { count: plainKeyBagArray.length });
 
             if (plainKeyBagArray.length > 0) {
                 hasPrivateKey = true;
@@ -196,12 +227,14 @@ export class PfxEditorProvider implements vscode.CustomReadonlyEditorProvider<Pf
             return { certificates, hasPrivateKey, privateKeyInfo };
         } catch (error) {
             const errorMessage = error instanceof Error ? error.message : String(error);
+            logger.error('PFX parsing failed', { error: errorMessage });
             
             // Check if it's a password error
             if (errorMessage.toLowerCase().includes('invalid password') ||
                 errorMessage.toLowerCase().includes('mac') ||
                 errorMessage.toLowerCase().includes('pkcs12') ||
                 errorMessage.toLowerCase().includes('decrypt')) {
+                logger.debug('Error appears to be password-related');
                 return {
                     certificates: [],
                     hasPrivateKey: false,
