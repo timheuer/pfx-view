@@ -59,6 +59,12 @@ jobs:
         env:
           VSCE_PAT: ${{ secrets.VSCE_PAT }}
 
+      - name: 🔗 Marketplace Link
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        shell: pwsh
+        run: |
+          Write-Host "::notice::Published to VS Code Marketplace: https://marketplace.visualstudio.com/items?itemName=timheuer.pfx-view"
+
       - name: ⬆️ Upload artifact
         uses: actions/upload-artifact@v4
         with:
