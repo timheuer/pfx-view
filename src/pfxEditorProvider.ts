@@ -339,8 +339,25 @@ export class PfxEditorProvider implements vscode.CustomReadonlyEditorProvider<Pf
                     value = usages.join(', ');
                 } else if (ext.name === 'basicConstraints') {
                     value = ext.cA ? `CA: true${ext.pathLenConstraint !== undefined ? `, Path Length: ${ext.pathLenConstraint}` : ''}` : 'CA: false';
+                } else if (ext.name === 'subjectKeyIdentifier') {
+                    // Convert binary to hex format
+                    value = this.binaryToHex(ext.subjectKeyIdentifier || ext.value || '');
+                } else if (ext.name === 'authorityKeyIdentifier') {
+                    // Handle authority key identifier - may have keyIdentifier property
+                    if (ext.keyIdentifier) {
+                        value = `KeyID: ${this.binaryToHex(ext.keyIdentifier)}`;
+                    } else if (typeof ext.value === 'string') {
+                        value = this.binaryToHex(ext.value);
+                    } else {
+                        value = '(complex value)';
+                    }
                 } else if (typeof ext.value === 'string') {
-                    value = ext.value;
+                    // Check if value looks like binary data (contains non-printable chars)
+                    if (this.isBinaryString(ext.value)) {
+                        value = this.binaryToHex(ext.value);
+                    } else {
+                        value = ext.value;
+                    }
                 } else {
                     value = JSON.stringify(ext.value || '(complex value)');
                 }
@@ -970,6 +987,37 @@ export class PfxEditorProvider implements vscode.CustomReadonlyEditorProvider<Pf
         } catch {
             return isoDate;
         }
+    }
+
+    /**
+     * Convert a binary string to hex format (XX:XX:XX...)
+     */
+    private binaryToHex(binaryStr: string): string {
+        if (!binaryStr) { return '(empty)'; }
+        const hex = [];
+        for (let i = 0; i < binaryStr.length; i++) {
+            hex.push(binaryStr.charCodeAt(i).toString(16).padStart(2, '0').toUpperCase());
+        }
+        return hex.join(':');
+    }
+
+    /**
+     * Check if a string contains binary/non-printable characters
+     */
+    private isBinaryString(str: string): boolean {
+        if (!str) { return false; }
+        // Check if string has non-printable ASCII characters (except common whitespace)
+        for (let i = 0; i < str.length; i++) {
+            const code = str.charCodeAt(i);
+            // Allow printable ASCII (32-126) and common whitespace (9, 10, 13)
+            if (code < 32 && code !== 9 && code !== 10 && code !== 13) {
+                return true;
+            }
+            if (code > 126) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private escapeHtml(text: string): string {
