@@ -14,7 +14,8 @@ vsc-extension-quickstart.md
 **/*.map
 **/*.ts
 **/.vscode-test.*
-samples
+samples/**
+!samples/screenshot.png
 .github
 version.json
 AGENTS.md

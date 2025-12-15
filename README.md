@@ -2,6 +2,8 @@
 
 A Visual Studio Code extension that provides a beautiful, read-only viewer for PFX/P12 certificate files.
 
+![PFX Viewer Screenshot](samples/screenshot.png)
+
 ## Features
 
 - **🔐 View Certificate Details**: Open any `.pfx` or `.p12` file directly in VS Code to see certificate information
@@ -17,8 +19,6 @@ A Visual Studio Code extension that provides a beautiful, read-only viewer for P
 Simply open any `.pfx` or `.p12` file in VS Code. The extension will automatically display the certificate information in a formatted viewer.
 
 If the file is password-protected, you'll be prompted to enter the password.
-
-## Screenshots
 
 ### Certificate Overview
 The viewer shows a summary of all certificates in the file, including:

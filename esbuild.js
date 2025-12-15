@@ -1,7 +1,36 @@
 const esbuild = require("esbuild");
+const fs = require("fs");
+const path = require("path");
 
 const production = process.argv.includes('--production');
 const watch = process.argv.includes('--watch');
+
+/**
+ * Plugin to copy static assets to dist folder
+ * @type {import('esbuild').Plugin}
+ */
+const copyAssetsPlugin = {
+	name: 'copy-assets',
+	setup(build) {
+		build.onEnd(() => {
+			const srcDir = path.join(__dirname, 'src', 'assets');
+			const destDir = path.join(__dirname, 'dist', 'assets');
+			
+			if (!fs.existsSync(destDir)) {
+				fs.mkdirSync(destDir, { recursive: true });
+			}
+			
+			if (fs.existsSync(srcDir)) {
+				fs.readdirSync(srcDir).forEach(file => {
+					fs.copyFileSync(
+						path.join(srcDir, file),
+						path.join(destDir, file)
+					);
+				});
+			}
+		});
+	}
+};
 
 /**
  * @type {import('esbuild').Plugin}
@@ -38,6 +67,7 @@ async function main() {
 		external: ['vscode'],
 		logLevel: 'silent',
 		plugins: [
+			copyAssetsPlugin,
 			/* add to the end of plugins array */
 			esbuildProblemMatcherPlugin,
 		],

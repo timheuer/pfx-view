@@ -26,6 +26,7 @@ interface PfxContents {
     hasPrivateKey: boolean;
     privateKeyInfo?: string;
     error?: string;
+    isPasswordProtected?: boolean;
 }
 
 /**
@@ -72,9 +73,11 @@ export class PfxEditorProvider implements vscode.CustomReadonlyEditorProvider<Pf
 
         // Try to parse without password first
         let pfxContents = this.parsePfx(document.data, '');
+        let isPasswordProtected = false;
         
         // If parsing failed (likely password protected), prompt for password
         if (pfxContents.error && pfxContents.error.includes('password')) {
+            isPasswordProtected = true;
             const password = await vscode.window.showInputBox({
                 prompt: 'Enter the password for this PFX/P12 file',
                 password: true,
@@ -84,6 +87,7 @@ export class PfxEditorProvider implements vscode.CustomReadonlyEditorProvider<Pf
 
             if (password !== undefined) {
                 pfxContents = this.parsePfx(document.data, password);
+                pfxContents.isPasswordProtected = true;
             }
         }
 
@@ -101,6 +105,7 @@ export class PfxEditorProvider implements vscode.CustomReadonlyEditorProvider<Pf
 
                 if (password !== undefined) {
                     const newContents = this.parsePfx(document.data, password);
+                    newContents.isPasswordProtected = true;
                     webviewPanel.webview.html = this.getHtmlForWebview(webviewPanel.webview, newContents, document.uri);
                 }
             } else if (message.type === 'copy-to-clipboard') {
@@ -115,8 +120,12 @@ export class PfxEditorProvider implements vscode.CustomReadonlyEditorProvider<Pf
      */
     private parsePfx(data: Uint8Array, password: string): PfxContents {
         try {
-            // Convert Uint8Array to forge buffer
-            const derBuffer = forge.util.createBuffer(Buffer.from(data).toString('binary'));
+            // Convert Uint8Array to binary string for forge
+            let binary = '';
+            for (let i = 0; i < data.length; i++) {
+                binary += String.fromCharCode(data[i]);
+            }
+            const derBuffer = forge.util.createBuffer(binary, 'raw');
             const asn1 = forge.asn1.fromDer(derBuffer);
             
             let p12: forge.pkcs12.Pkcs12Pfx;
@@ -323,12 +332,17 @@ export class PfxEditorProvider implements vscode.CustomReadonlyEditorProvider<Pf
             this.context.extensionUri, 'node_modules', '@vscode/codicons', 'dist', 'codicon.css'
         ));
 
+        // Get certificate icon URI
+        const certIconUri = webview.asWebviewUri(vscode.Uri.joinPath(
+            this.context.extensionUri, 'dist', 'assets', 'cert.svg'
+        ));
+
         return /* html */`
             <!DOCTYPE html>
             <html lang="en">
             <head>
                 <meta charset="UTF-8">
-                <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}'; font-src ${webview.cspSource};">
+                <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}'; font-src ${webview.cspSource}; img-src ${webview.cspSource};">
                 <meta name="viewport" content="width=device-width, initial-scale=1.0">
                 <title>PFX Viewer</title>
                 <link href="${codiconsUri}" rel="stylesheet" />
@@ -358,6 +372,16 @@ export class PfxEditorProvider implements vscode.CustomReadonlyEditorProvider<Pf
 
                     .header-icon {
                         font-size: 32px;
+                        display: flex;
+                        align-items: center;
+                        justify-content: center;
+                    }
+
+                    .header-icon-svg {
+                        max-width: 48px;
+                        max-height: 48px;
+                        width: 48px;
+                        height: 48px;
                     }
 
                     .header-info h1 {
@@ -534,6 +558,11 @@ export class PfxEditorProvider implements vscode.CustomReadonlyEditorProvider<Pf
                         color: var(--vscode-textLink-foreground);
                     }
 
+                    .property-value.copyable .copy-icon.copied {
+                        opacity: 1;
+                        color: var(--vscode-charts-green, #89d185);
+                    }
+
                     .thumbprint {
                         font-family: var(--vscode-editor-font-family);
                         font-size: 0.85em;
@@ -640,7 +669,7 @@ export class PfxEditorProvider implements vscode.CustomReadonlyEditorProvider<Pf
                 </style>
             </head>
             <body>
-                ${this.renderContent(contents, fileName)}
+                ${this.renderContent(contents, fileName, certIconUri.toString())}
                 
                 <script nonce="${nonce}">
                     const vscode = acquireVsCodeApi();
@@ -660,6 +689,18 @@ export class PfxEditorProvider implements vscode.CustomReadonlyEditorProvider<Pf
                         el.addEventListener('click', () => {
                             const value = el.dataset.value || el.textContent;
                             vscode.postMessage({ type: 'copy-to-clipboard', value });
+                            
+                            // Show green checkmark temporarily
+                            const icon = el.querySelector('.copy-icon');
+                            if (icon) {
+                                icon.classList.remove('codicon-copy');
+                                icon.classList.add('codicon-check', 'copied');
+                                
+                                setTimeout(() => {
+                                    icon.classList.remove('codicon-check', 'copied');
+                                    icon.classList.add('codicon-copy');
+                                }, 1500);
+                            }
                         });
                     });
 
@@ -684,11 +725,16 @@ export class PfxEditorProvider implements vscode.CustomReadonlyEditorProvider<Pf
         `;
     }
 
-    private renderContent(contents: PfxContents, fileName: string): string {
+    private renderContent(contents: PfxContents, fileName: string, certIconUri: string): string {
+        // Certificate icon from SVG file, lock emoji for password-protected
+        const certIcon = `<img class="header-icon-svg" src="${certIconUri}" alt="Certificate" />`;
+        const lockIcon = '🔐';
+        const headerIcon = contents.isPasswordProtected ? lockIcon : certIcon;
+
         if (contents.error) {
             return /* html */`
                 <div class="header">
-                    <span class="header-icon">🔐</span>
+                    <span class="header-icon">${lockIcon}</span>
                     <div class="header-info">
                         <h1>${this.escapeHtml(fileName)}</h1>
                     </div>
@@ -705,7 +751,7 @@ export class PfxEditorProvider implements vscode.CustomReadonlyEditorProvider<Pf
         
         return /* html */`
             <div class="header">
-                <span class="header-icon">🔐</span>
+                <span class="header-icon">${headerIcon}</span>
                 <div class="header-info">
                     <h1>${this.escapeHtml(fileName)}</h1>
                 </div>
