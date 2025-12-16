@@ -19,3 +19,4 @@ samples/**
 .github
 version.json
 AGENTS.md
+scripts

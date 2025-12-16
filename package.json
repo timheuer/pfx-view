@@ -58,13 +58,25 @@
     "customEditors": [
       {
         "viewType": "pfx-view.pfxViewer",
-        "displayName": "PFX/P12 Viewer",
+        "displayName": "Certificate Viewer",
         "selector": [
           {
             "filenamePattern": "*.pfx"
           },
           {
             "filenamePattern": "*.p12"
+          },
+          {
+            "filenamePattern": "*.cer"
+          },
+          {
+            "filenamePattern": "*.crt"
+          },
+          {
+            "filenamePattern": "*.pem"
+          },
+          {
+            "filenamePattern": "*.der"
           }
         ],
         "priority": "default"

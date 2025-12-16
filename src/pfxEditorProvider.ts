@@ -28,7 +28,13 @@ interface PfxContents {
     privateKeyInfo?: string;
     error?: string;
     isPasswordProtected?: boolean;
+    fileFormat?: 'pfx' | 'pem' | 'der';
 }
+
+/**
+ * Detected certificate file format
+ */
+type CertificateFormat = 'pfx' | 'pem' | 'der';
 
 /**
  * Provider for PFX/P12 file viewer.
@@ -75,25 +81,41 @@ export class PfxEditorProvider implements vscode.CustomReadonlyEditorProvider<Pf
             enableScripts: true,
         };
 
-        // Try to parse without password first
-        logger.debug('Attempting to parse PFX without password');
-        let pfxContents = this.parsePfx(document.data, '');
-        let isPasswordProtected = false;
-        
-        // If parsing failed (likely password protected), prompt for password
-        if (pfxContents.error && pfxContents.error.includes('password')) {
-            logger.info('PFX file is password protected, prompting user');
-            isPasswordProtected = true;
-            const password = await vscode.window.showInputBox({
-                prompt: 'Enter the password for this PFX/P12 file',
-                password: true,
-                placeHolder: 'Password',
-                ignoreFocusOut: true,
-            });
+        // Detect file format
+        const format = this.detectFormat(document.uri, document.data);
+        logger.info('Detected certificate format', { format, path: document.uri.fsPath });
 
-            if (password !== undefined) {
-                pfxContents = this.parsePfx(document.data, password);
-                pfxContents.isPasswordProtected = true;
+        let pfxContents: PfxContents;
+
+        if (format === 'pem') {
+            // PEM files don't need password
+            pfxContents = this.parsePem(document.data);
+            pfxContents.fileFormat = 'pem';
+        } else if (format === 'der') {
+            // DER files don't need password
+            pfxContents = this.parseDer(document.data);
+            pfxContents.fileFormat = 'der';
+        } else {
+            // PFX/P12 - Try to parse without password first
+            logger.debug('Attempting to parse PFX without password');
+            pfxContents = this.parsePfx(document.data, '');
+            pfxContents.fileFormat = 'pfx';
+            
+            // If parsing failed (likely password protected), prompt for password
+            if (pfxContents.error && pfxContents.error.includes('password')) {
+                logger.info('PFX file is password protected, prompting user');
+                const password = await vscode.window.showInputBox({
+                    prompt: 'Enter the password for this PFX/P12 file',
+                    password: true,
+                    placeHolder: 'Password',
+                    ignoreFocusOut: true,
+                });
+
+                if (password !== undefined) {
+                    pfxContents = this.parsePfx(document.data, password);
+                    pfxContents.isPasswordProtected = true;
+                    pfxContents.fileFormat = 'pfx';
+                }
             }
         }
 
@@ -112,6 +134,10 @@ export class PfxEditorProvider implements vscode.CustomReadonlyEditorProvider<Pf
         webviewPanel.webview.onDidReceiveMessage(async (message) => {
             logger.debug('Received webview message', { type: message.type });
             if (message.type === 'retry-password') {
+                // Only PFX files support password retry
+                if (pfxContents.fileFormat !== 'pfx') {
+                    return;
+                }
                 logger.info('User retrying password entry');
                 const password = await vscode.window.showInputBox({
                     prompt: 'Enter the password for this PFX/P12 file',
@@ -123,6 +149,7 @@ export class PfxEditorProvider implements vscode.CustomReadonlyEditorProvider<Pf
                 if (password !== undefined) {
                     const newContents = this.parsePfx(document.data, password);
                     newContents.isPasswordProtected = true;
+                    newContents.fileFormat = 'pfx';
                     if (newContents.error) {
                         logger.warn('Password retry failed', { error: newContents.error });
                     } else {
@@ -143,6 +170,166 @@ export class PfxEditorProvider implements vscode.CustomReadonlyEditorProvider<Pf
         webviewPanel.onDidDispose(() => {
             logger.debug('Webview panel disposed');
         });
+    }
+
+    /**
+     * Detect the certificate file format from URI and content
+     */
+    private detectFormat(uri: vscode.Uri, data: Uint8Array): CertificateFormat {
+        const ext = uri.fsPath.toLowerCase().split('.').pop() || '';
+        
+        // Check for PEM format (text-based with -----BEGIN)
+        // PEM files start with ASCII characters
+        if (data.length > 0) {
+            // Check first bytes for PEM header
+            const header = String.fromCharCode(...data.slice(0, Math.min(30, data.length)));
+            if (header.includes('-----BEGIN')) {
+                logger.debug('Detected PEM format from content');
+                return 'pem';
+            }
+        }
+
+        // Use extension as fallback
+        if (ext === 'pem') {
+            return 'pem';
+        }
+        if (ext === 'pfx' || ext === 'p12') {
+            return 'pfx';
+        }
+        if (ext === 'cer' || ext === 'crt' || ext === 'der') {
+            // Could be DER or PEM - we already checked for PEM above
+            return 'der';
+        }
+
+        // Default to trying as PFX (most complex format, will fail gracefully)
+        return 'pfx';
+    }
+
+    /**
+     * Parse a PEM file and extract certificate information
+     */
+    private parsePem(data: Uint8Array): PfxContents {
+        try {
+            logger.trace('Parsing PEM file');
+            const pemString = new TextDecoder().decode(data);
+            const certificates: CertificateInfo[] = [];
+            let hasPrivateKey = false;
+            let privateKeyInfo: string | undefined;
+
+            // Find all certificate blocks
+            const certRegex = /-----BEGIN CERTIFICATE-----([\s\S]*?)-----END CERTIFICATE-----/g;
+            let match;
+            while ((match = certRegex.exec(pemString)) !== null) {
+                try {
+                    const certPem = match[0];
+                    const cert = forge.pki.certificateFromPem(certPem);
+                    const certInfo = this.extractCertInfo(cert);
+                    logger.debug('Extracted certificate from PEM', {
+                        cn: certInfo.subject['CN'] || 'N/A',
+                        thumbprint: certInfo.thumbprint.substring(0, 16) + '...'
+                    });
+                    certificates.push(certInfo);
+                } catch (certError) {
+                    logger.warn('Failed to parse certificate block in PEM', { error: String(certError) });
+                }
+            }
+
+            // Check for private key
+            if (pemString.includes('-----BEGIN PRIVATE KEY-----') ||
+                pemString.includes('-----BEGIN RSA PRIVATE KEY-----') ||
+                pemString.includes('-----BEGIN EC PRIVATE KEY-----') ||
+                pemString.includes('-----BEGIN ENCRYPTED PRIVATE KEY-----')) {
+                hasPrivateKey = true;
+                
+                try {
+                    // Try to parse unencrypted RSA key
+                    if (pemString.includes('-----BEGIN RSA PRIVATE KEY-----')) {
+                        const keyMatch = pemString.match(/-----BEGIN RSA PRIVATE KEY-----([\s\S]*?)-----END RSA PRIVATE KEY-----/);
+                        if (keyMatch) {
+                            const key = forge.pki.privateKeyFromPem(keyMatch[0]);
+                            const rsaKey = key as forge.pki.rsa.PrivateKey;
+                            privateKeyInfo = `RSA ${rsaKey.n.bitLength()} bits`;
+                        }
+                    } else if (pemString.includes('-----BEGIN PRIVATE KEY-----')) {
+                        const keyMatch = pemString.match(/-----BEGIN PRIVATE KEY-----([\s\S]*?)-----END PRIVATE KEY-----/);
+                        if (keyMatch) {
+                            const key = forge.pki.privateKeyFromPem(keyMatch[0]);
+                            const rsaKey = key as forge.pki.rsa.PrivateKey;
+                            if (rsaKey.n) {
+                                privateKeyInfo = `RSA ${rsaKey.n.bitLength()} bits`;
+                            }
+                        }
+                    } else if (pemString.includes('-----BEGIN ENCRYPTED PRIVATE KEY-----')) {
+                        privateKeyInfo = 'Encrypted (password required to view details)';
+                    }
+                } catch {
+                    privateKeyInfo = 'Private key present';
+                }
+                
+                logger.debug('Found private key in PEM', { info: privateKeyInfo });
+            }
+
+            if (certificates.length === 0) {
+                return {
+                    certificates: [],
+                    hasPrivateKey,
+                    privateKeyInfo,
+                    error: 'No valid certificates found in PEM file'
+                };
+            }
+
+            logger.info('PEM parsed successfully', {
+                certificateCount: certificates.length,
+                hasPrivateKey
+            });
+
+            return { certificates, hasPrivateKey, privateKeyInfo };
+        } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            logger.error('PEM parsing failed', { error: errorMessage });
+            return {
+                certificates: [],
+                hasPrivateKey: false,
+                error: `Failed to parse PEM file: ${errorMessage}`
+            };
+        }
+    }
+
+    /**
+     * Parse a DER file and extract certificate information
+     */
+    private parseDer(data: Uint8Array): PfxContents {
+        try {
+            logger.trace('Parsing DER file');
+            // Convert Uint8Array to binary string for forge
+            let binary = '';
+            for (let i = 0; i < data.length; i++) {
+                binary += String.fromCharCode(data[i]);
+            }
+            
+            const derBuffer = forge.util.createBuffer(binary, 'raw');
+            const asn1 = forge.asn1.fromDer(derBuffer);
+            const cert = forge.pki.certificateFromAsn1(asn1);
+            
+            const certInfo = this.extractCertInfo(cert);
+            logger.info('DER parsed successfully', {
+                cn: certInfo.subject['CN'] || 'N/A',
+                thumbprint: certInfo.thumbprint.substring(0, 16) + '...'
+            });
+
+            return {
+                certificates: [certInfo],
+                hasPrivateKey: false
+            };
+        } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            logger.error('DER parsing failed', { error: errorMessage });
+            return {
+                certificates: [],
+                hasPrivateKey: false,
+                error: `Failed to parse DER certificate: ${errorMessage}`
+            };
+        }
     }
 
     /**
