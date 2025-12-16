@@ -1,7 +1,7 @@
 {
   "name": "pfx-view",
-  "displayName": "PFX/P12 Viewer",
-  "description": "A read-only viewer for PFX/P12 certificate files. View certificate details, validity, and metadata with a beautiful UI.",
+  "displayName": "Certificate Viewer",
+  "description": "A read-only viewer for PFX/P12/CRT/PEM/DER certificate files. View certificate details, validity, and metadata with a beautiful UI.",
   "version": "0.0.0-placeholder",
   "publisher": "timheuer",
   "author": {
